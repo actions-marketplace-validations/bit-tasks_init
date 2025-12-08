@@ -1,6 +1,6 @@
-name: 'Initalize Bit'
+name: 'Initialize Bit'
 description: 'Initialize Bit'
-branding: 
+branding:
   icon: 'download'
   color: 'purple'
 inputs:
@@ -8,6 +8,101 @@ inputs:
     description: "Workspace json file directory path"
     required: false
     default: './'
+  skip-deps-install:
+    description: "Skip running 'bit install' command"
+    required: false
+    default: 'false'
+  skip-bit-install:
+    description: "Skip installing bit cli"
+    required: false
+    default: 'false'
+  cache:
+    description: "Enable caching"
+    required: false
+    default: 'false'
+  ripple:
+    description: "Use Ripple CI to build components"
+    required: false
+    default: 'false'
+  log:
+    description: "Log options for bit commands. Options: [trace, debug, info, warn, error, fatal]"
+    required: false
+    default: ''
+  # Deprecated inputs
+  docker:
+    description: "(Deprecated) Use Docker Container to build components"
+    required: false
+    default: 'false'
+  skip-install:
+    description: "(Deprecated) Skip running 'bit install' command"
+    required: false
+    default: 'false'
+outputs:
+  engine:
+    value: ${{ steps.bit-init.outputs.engine }}
+    description: 'The Bit engine version defined in workspace.jsonc'
+  bit:
+    value: ${{ steps.bit-init.outputs.bit }}
+    description: 'The Bit version installed or available to execute the task'
+  org:
+    value: ${{ steps.bit-init.outputs.org }}
+    description: 'Bit organization defined in workspace.jsonc'
+  scope:
+    value: ${{ steps.bit-init.outputs.scope }}
+    description: 'Bit scope defined in workspace.jsonc'
 runs:
-  using: 'node16'
-  main: 'dist/index.js'
+  using: 'composite'
+  steps:
+    - name: Detect if running in a container and create symlink if needed
+      shell: bash
+      run: |
+        if [ -f /.dockerenv ]; then
+          echo "Running inside a container."
+          echo "IS_CONTAINER=true" >> $GITHUB_ENV
+          echo "Creating symlink for Docker image..."
+          mkdir -p /home/runner
+          ln -sfn /__w /home/runner/work
+        else
+          echo "Not running inside a container."
+          echo "IS_CONTAINER=false" >> $GITHUB_ENV
+        fi
+    - name: Setup Node
+      if: env.IS_CONTAINER == 'false'
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.14'
+
+    - name: Install pnpm
+      if: inputs.cache == 'true'
+      uses: pnpm/action-setup@v3
+      with:
+        version: 8
+        run_install: false
+
+    - name: Get pnpm store directory
+      if: inputs.cache == 'true'
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent | tail -n 1)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Run Bit Initialization Script
+      id: bit-init
+      run: node ${{ github.action_path }}/dist/index.js
+      shell: bash
+      env:
+        WSDIR: ${{ inputs.ws-dir }}
+        CACHE: ${{ inputs.cache }}
+        RIPPLE: ${{ inputs.ripple }}
+        LOG: ${{ inputs.log }}
+        SKIP_BIT_INSTALL: ${{ inputs.skip-bit-install }}
+        SKIP_DEPS_INSTALL: ${{ inputs.skip-deps-install == 'true' && inputs.skip-deps-install || inputs.skip-install }}
+

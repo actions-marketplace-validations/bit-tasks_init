@@ -1,57 +1,98 @@
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from "fs";
+import * as path from "path";
+import * as jsoncParser from "jsonc-parser";
+import { exec } from "@actions/exec";
+import * as core from "@actions/core";
 
-export type ExecFunction = (command: string, options?: {cwd: string}) => Promise<number>;
-
-function removeSchemeUrl(inputString: string): string {
-  const urlRegex: RegExp = /(https?:\/\/[^\s]+)/g;
-  return inputString.replace(urlRegex, '",');
-}
-
-function removeComments(jsonc: string): string {
-  return jsonc.replace(/\/\/.*|\/\*[\s\S]*?\*\//g, '');
-}
-
-const run: (exec: ExecFunction, bitToken: string, wsdir: string) => Promise<void> = async (exec, bitToken, wsdir) => {
-  // get bit version to install
+const run = async (
+  wsdir: string,
+  skipDepsInstall: boolean,
+  skipBitInstall: boolean,
+  args: string[]
+) => {
   const wsDirPath = path.resolve(wsdir);
-  // sets wsdir env for any external usage
-  process.env.WSDIR = wsdir;
-
   const wsFile = path.join(wsDirPath, "workspace.jsonc");
-  const workspace = fs.readFileSync(wsFile).toString();
-  const engineVersionMatch = /"engine": "(.*)"/.exec(workspace);
-  const bitEngineVersion = engineVersionMatch ? engineVersionMatch[1] : "";
+  const workspaceFileExist = fs.existsSync(wsFile);
+  let bitEngineVersion = "";
 
-  const workspaceJson = removeComments(removeSchemeUrl(workspace));
-  const workspaceObject = JSON.parse(workspaceJson);
-  const defaultScope = workspaceObject['teambit.workspace/workspace'].defaultScope;
-  const [Org, Scope ] = defaultScope.split(".");
-  process.env.ORG = Org
-  process.env.SCOPE = Scope
+  if (workspaceFileExist) {
+    const workspace = fs.readFileSync(wsFile).toString();
+    // sets org and scope env for dependent tasks usage
+    const workspaceObject = jsoncParser.parse(workspace);
+    const defaultScope =
+      workspaceObject["teambit.workspace/workspace"].defaultScope;
+    const [Org, Scope] = defaultScope.split(".");
+    process.env.ORG = Org;
+    process.env.SCOPE = Scope;
 
-  // install bvm globally
-  await exec("npm i -g @teambit/bvm");
-  // install bit
-  await exec(`bvm install ${bitEngineVersion} --use-system-node`);
+    // get bitEngineVersion from workspace.jsonc
+    bitEngineVersion = workspaceObject["teambit.harmony/bit"]?.engine || "";
+    core.info(
+      `Bit engine ${bitEngineVersion} is defined on workflow.jsonc`
+    );
+    process.env.ENGINE = bitEngineVersion;
+  } else {
+    // Log a warning if workspace.jsonc is missing
+    core.warning(
+      "WARNING - Cannot find the workspace.jsonc file. This will skip initializing ORG and SCOPE environment variables and may affect subsequent tasks!"
+    );
+  }
+
+  // get installed bit version
+  let installedBitVersion = "";
+  try {
+    await exec("bit", ["-v"], {
+      listeners: {
+        stdout: (data: Buffer) => {
+          installedBitVersion += data.toString();
+        },
+      },
+    });
+    installedBitVersion = installedBitVersion.trim();
+    core.info(
+      `Bit version ${installedBitVersion} is available on the build agent.`
+    );
+    process.env.BIT = installedBitVersion;
+  } catch (error) {
+    installedBitVersion = "";
+  }
+
+  // check if installation is needed
+  const shouldInstallBitCLI =
+    !skipBitInstall &&
+    (!installedBitVersion ||
+      (bitEngineVersion && bitEngineVersion !== installedBitVersion));
+
+  if (shouldInstallBitCLI) {
+    if (
+      installedBitVersion &&
+      bitEngineVersion &&
+      bitEngineVersion !== installedBitVersion
+    ) {
+      core.warning(
+        `WARNING - Bit version ${installedBitVersion} is already installed, however workspace requires the version ${bitEngineVersion}. Installing version ${bitEngineVersion}. This may increase the overall build time.`
+      );
+    }
+    await exec("npm", ["i", "-g", "@teambit/bvm"]);
+    await exec("bvm", ["install", bitEngineVersion, "--use-system-node"]);
+  }
+
   // sets path for current step
   process.env.PATH = `${process.env.HOME}/bin:` + process.env.PATH;
 
   // config bit/npm for CI/CD
-  await exec("bit config set interactive false");
-  await exec("bit config set analytics_reporting false");
-  await exec("bit config set anonymous_reporting false");
-  await exec(`bit config set user.token ${bitToken}`);
-  // await exec("npm config set always-auth true");
-  //TODO: move these back to "node.bit.cloud" once that promotion occurs
-  await exec("npm config set '@bit:registry' https://node-registry.bit.cloud");
-  await exec(
-    "npm config set '@teambit:registry' https://node-registry.bit.cloud"
-  );
-  await exec(`npm config set //node-registry.bit.cloud/:_authToken ${bitToken}`);
+  process.env.BIT_CONFIG_ANALYTICS_REPORTING = "false";
+  process.env.BIT_CONFIG_ANONYMOUS_REPORTING = "false";
+  process.env.BIT_CONFIG_INTERACTIVE = "false";
+  process.env.BIT_DISABLE_CONSOLE = "true";
+  process.env.BIT_DISABLE_SPINNER = "true";
 
   // bit install dependencies
-  await exec("bit install", { cwd: wsdir });
-}
+  if (workspaceFileExist && !skipDepsInstall) {
+    await exec("bit", ["install", ...args], { cwd: wsdir });
+  } else {
+    core.warning(`WARNING - Skipped running 'bit install' command`);
+  }
+};
 
 export default run;

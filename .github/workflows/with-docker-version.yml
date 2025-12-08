@@ -1,21 +1,46 @@
-name: Test Bit Init
+name: Test Bit Init with Docker Version
+
 on:
   workflow_dispatch:
+
 jobs:
-  install:
+  bit-engine-version:
     runs-on: ubuntu-latest
+    outputs:
+        engine: ${{ steps.bit-engine-version.outputs.engine  }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Get Bit Engine Version
+        uses: bit-tasks/init@main
+        id: bit-engine-version
+        with:
+          ws-dir: "test-data"
+          skip-bit-install: "true"
+          skip-deps-install: "true"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: bit-engine-version
+    container:
+      image: bitsrc/stable:${{ needs.bit-engine-version.outputs.engine }}-alpine
+    timeout-minutes: 20
     env:
       BIT_CONFIG_ACCESS_TOKEN: ${{ secrets.BIT_CONFIG_ACCESS_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+      - name: Verify Node.js installation
+        run: node -v
+      - name: Verify Git installation
+        run: git -v
       - name: Initialize Bit
-        uses: bit-tasks/init@v3
+        uses: bit-tasks/init@main
         with:
           ws-dir: "test-data"
           # ripple: "true"
           log: "trace"
-          cache: "true"
+          # cache: "true"
       - name: Resolve component packages from bit.cloud registry (Mandatory for component installation using package managers other than Bit)
         run: |
           npm config set '@bit:registry' https://node-registry.bit.cloud
